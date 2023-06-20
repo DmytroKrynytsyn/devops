@@ -53,6 +53,3 @@ for instance in get_ec2_by_tag('Purpose', 'kcluster'):
     inventory['_meta']['hostvars'].update( { hostName:{'ansible_host': publicIp, 'private_ip': privateIp}})
 
 print(json.dumps(inventory))
-
-
-
