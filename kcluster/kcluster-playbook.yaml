@@ -1,0 +1,165 @@
+---
+- name: Masters init healthchecks
+  hosts: masters
+  tasks:
+  - name: Update apt cache
+    become: true
+    apt:
+      update_cache: yes
+  - name: Install Nginx
+    become: true
+    apt:
+      name: nginx
+      state: present
+  - name: Start Nginx service
+    become: true
+    service:
+      name: nginx
+      state: started
+      enabled: yes
+    
+- name: Common tasks for kcluster
+  hosts: all
+  gather_facts: False
+  tasks:
+    - name: Append DNS records to hosts file
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars[item]['private_ip'] }}  {{ hostvars[item]['inventory_hostname'] }}"
+      loop: "{{ groups['all'] }}"
+    - name: Create nested folders
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        recurse: true
+      loop:
+        - { path: "/etc/modules-load.d/" }
+        - { path: "/etc/sysctl.d/" }
+        - { path: "/etc/containerd" }
+        - { path: "/etc/apt/sources.list.d/" }
+    - name: Create file
+      copy:
+        dest: "{{ item.path }}"
+        content: ""
+      loop:
+        - { path: "/etc/modules-load.d/containerd.conf" }
+        - { path: "/etc/sysctl.d/99-kubernetes-cri.conf" }
+        - { path: "/etc/containerd/config.toml" }
+        - { path: "/etc/apt/sources.list.d/kubernetes.list" }
+    - name: overlay in containerd.conf
+      lineinfile:
+        path: /etc/modules-load.d/containerd.conf
+        line: "overlay"
+    - name: br_netfilter in containerd.conf
+      lineinfile:
+        path: /etc/modules-load.d/containerd.conf
+        line: "br_netfilter"
+    - name: net.bridge.bridge-nf-call-iptables = 1 in /etc/sysctl.d/99-kubernetes-cri.conf
+      lineinfile:
+        path: /etc/sysctl.d/99-kubernetes-cri.conf
+        line: "net.bridge.bridge-nf-call-iptables = 1"
+    - name: net.bridge.bridge-nf-call-ip6tables = 1 in /etc/sysctl.d/99-kubernetes-cri.conf
+      lineinfile:
+        path: /etc/sysctl.d/99-kubernetes-cri.conf
+        line: "net.bridge.bridge-nf-call-ip6tables = 1"
+    - name: net.ipv4.ip_forward = 1 in /etc/sysctl.d/99-kubernetes-cri.conf
+      lineinfile:
+        path: /etc/sysctl.d/99-kubernetes-cri.conf
+        line: "net.ipv4.ip_forward = 1"
+    - name: modprobe overlay
+      command: modprobe overlay
+    - name: modprobe br_netfilter
+      command: modprobe br_netfilter
+    - name: sysctl --system
+      command: sysctl --system
+    - name: Run apt-get update
+      apt:
+        update_cache: yes
+    - name: apt curl
+      apt:
+        name: curl
+        state: present     
+    - name: apt apt-transport-https
+      apt:
+        name: apt-transport-https
+        state: present     
+    - name: Download GPG key
+      command: curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg -o /tmp/apt-key.gpg
+    - name: Add GPG key
+      command: apt-key add /tmp/apt-key.gpg
+    - name: Run apt-get update 2
+      apt:
+        update_cache: yes
+    - name: apt containerd
+      apt:
+        name: containerd
+        state: present     
+    - name: containerd config default
+      command: containerd config default > /etc/containerd/config.toml
+    - name: Restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+    - name: Disable swap
+      command: swapoff -a
+    - name: kubernetes-xenial in kubernetes.list
+      lineinfile:
+        path: /etc/apt/sources.list.d/kubernetes.list
+        line: "deb https://apt.kubernetes.io/ kubernetes-xenial main"
+    - name: Run apt-get update 3
+      apt:
+        update_cache: yes
+    - name: Install kube binaries
+      apt:
+        name: "{{ item.name }}"
+        state: present
+        allow_downgrades: yes
+      loop:
+        - { name: "kubelet=1.24.0-00" }
+        - { name: "kubeadm=1.24.0-00" }
+        - { name: "kubectl=1.24.0-00" }
+    - name: Mark hold
+      command: apt-mark hold kubelet kubeadm kubectl
+
+- name: Masters init
+  hosts: masters
+  tasks:
+  - name: first master kubeadm init
+    shell: kubeadm init --control-plane-endpoint "{{ hostvars[inventory_hostname]['elb'] }}:6443" --upload-certs --pod-network-cidr 192.168.0.0/16 --kubernetes-version 1.24.0
+    when: inventory_hostname == play_hosts[0]
+    register: kubeadm_init_output
+  - name: first master apply calico
+    shell: kubectl apply -f https://docs.projectcalico.org/archive/v3.20/manifests/calico.yaml --kubeconfig /etc/kubernetes/admin.conf
+    when: inventory_hostname == play_hosts[0]
+  - name: first master save tmp file
+    copy:
+      content: "{{ kubeadm_init_output.stdout }}"
+      dest: /tmp/kubeadm_init_output.txt
+    when: inventory_hostname == play_hosts[0]
+  - name: first master - parse the command to join as a master
+    shell: cat /tmp/kubeadm_init_output.txt | grep -e "kubeadm join" -e "--discovery" -e "--control" | head -n 3 | tr -d '\n' | tr -d '\t' | sed 's/\\//g' 
+    when: inventory_hostname == play_hosts[0]
+    register: kubeadm_init_master
+  - name: first master - parse the command to join as a worker
+    shell: cat /tmp/kubeadm_init_output.txt | grep -e "kubeadm join" -e "--discovery" -e "--control" | tail -n 2 | tr -d '\n' | tr -d '\t' | sed 's/\\//g'
+    when: inventory_hostname == play_hosts[0]
+    register: kubeadm_init_worker
+  - name: Register dummy host with variable
+    add_host:
+      name: "host_for_var"
+      kubeadm_init_worker_command: "{{ kubeadm_init_worker.stdout }}"
+  - name: rest of masters kubeadm init
+    shell: "{{hostvars[play_hosts[0]]['kubeadm_init_master'].stdout}}"
+    when: inventory_hostname != play_hosts[0]
+  - name: get config
+    ansible.builtin.fetch:
+      src: /etc/kubernetes/admin.conf
+      dest: ./
+      flat: yes
+    when: inventory_hostname == play_hosts[0]
+
+- name: Workers init
+  hosts: workers
+  tasks:
+  - name: workers join kcluster
+    shell: "{{ hostvars['host_for_var']['kubeadm_init_worker_command'] }}"
