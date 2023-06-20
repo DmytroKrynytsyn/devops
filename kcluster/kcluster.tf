@@ -24,7 +24,7 @@ variable "worker_instance_count" {
 
 variable "my_ip" {
   type    = string
-  default = "89.247.166.167"
+  default = "<own ip>"
 }
 
 resource "aws_launch_template" "kcluster_masters" {

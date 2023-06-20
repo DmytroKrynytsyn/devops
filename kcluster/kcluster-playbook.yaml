@@ -1,4 +1,4 @@
---- 
+---
 - name: Masters init healthchecks
   hosts: masters
   tasks:
