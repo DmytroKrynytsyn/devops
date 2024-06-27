@@ -2,10 +2,27 @@
 - name: Masters init healthchecks
   hosts: masters
   tasks:
+  - name: Creates directory
+    file:
+      path: /etc/apt/keyrings/
+      state: directory
+
+  - name: Use the k8s apt key
+    get_url:
+      url: https://pkgs.k8s.io/core:/stable:/v1.24/deb/Release.key
+      dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+      mode: "0644"
+
+  - name: Install k8s apt sources
+    apt_repository:
+      repo: deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.24/deb/ /
+      state: present
+
   - name: Update apt cache
     become: true
     apt:
       update_cache: yes
+      allow_unauthenticated: true
   - name: Install Nginx
     become: true
     apt:
@@ -22,6 +39,22 @@
   hosts: all
   gather_facts: False
   tasks:
+    - name: Creates directory
+      file:
+        path: /etc/apt/keyrings/
+        state: directory
+
+    - name: Use the k8s apt key
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.24/deb/Release.key
+        dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+        mode: "0644"
+
+    - name: Install k8s apt sources
+      apt_repository:
+        repo: deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.24/deb/ /
+        state: present
+
     - name: Append DNS records to hosts file
       lineinfile:
         path: /etc/hosts
@@ -45,7 +78,6 @@
         - { path: "/etc/modules-load.d/containerd.conf" }
         - { path: "/etc/sysctl.d/99-kubernetes-cri.conf" }
         - { path: "/etc/containerd/config.toml" }
-        - { path: "/etc/apt/sources.list.d/kubernetes.list" }
     - name: overlay in containerd.conf
       lineinfile:
         path: /etc/modules-load.d/containerd.conf
@@ -102,22 +134,20 @@
         state: restarted
     - name: Disable swap
       command: swapoff -a
-    - name: kubernetes-xenial in kubernetes.list
-      lineinfile:
-        path: /etc/apt/sources.list.d/kubernetes.list
-        line: "deb https://apt.kubernetes.io/ kubernetes-xenial main"
+
     - name: Run apt-get update 3
       apt:
         update_cache: yes
+        allow_unauthenticated: true
     - name: Install kube binaries
       apt:
         name: "{{ item.name }}"
         state: present
         allow_downgrades: yes
       loop:
-        - { name: "kubelet=1.24.0-00" }
-        - { name: "kubeadm=1.24.0-00" }
-        - { name: "kubectl=1.24.0-00" }
+        - { name: "kubelet" }
+        - { name: "kubeadm" }
+        - { name: "kubectl" }
     - name: Mark hold
       command: apt-mark hold kubelet kubeadm kubectl
 
